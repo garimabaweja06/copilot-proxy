@@ -10,27 +10,22 @@ export default async function handler(req, res) {
   const { system, user } = body;
   if (!user) return res.status(400).json({ error: "missing user" });
 
-  // 1) Try Gemini (retry once if it is overloaded)
-  let g = await gemini(system, user);
-  if (g.status === 503) {
-    await new Promise((r) => setTimeout(r, 1000));
-    g = await gemini(system, user);
-  }
-  if (g.ok) {
-    console.log("provider: gemini");
-    return res.status(200).json({ text: g.text });
-  }
-
-  // 2) Gemini failed, so try Groq
+// 1) Try Groq first (Gemini has been overloaded)
   const q = await groq(system, user);
   if (q.ok) {
-    console.log("provider: groq (gemini status " + g.status + ")");
+    console.log("provider: groq");
     return res.status(200).json({ text: q.text });
   }
 
-  console.log("both failed: gemini " + g.status + ", groq " + q.status);
-  return res.status(g.status === 429 ? 429 : 503).json({ error: "all providers failed" });
-}
+  // 2) Groq failed, so try Gemini
+  const g = await gemini(system, user);
+  if (g.ok) {
+    console.log("provider: gemini (groq status " + q.status + ")");
+    return res.status(200).json({ text: g.text });
+  }
+
+  console.log("both failed: groq " + q.status + ", gemini " + g.status);
+  return res.status(q.status === 429 || g.status === 429 ? 429 : 503).json({ error: "all providers failed" });
 
 async function gemini(system, user) {
   try {
