@@ -10,49 +10,27 @@ export default async function handler(req, res) {
   const { system, user } = body;
   if (!user) return res.status(400).json({ error: "missing user" });
 
-// 1) Try Groq first (Gemini has been overloaded)
+  // 1) Try Groq first
   const q = await groq(system, user);
   if (q.ok) {
     console.log("provider: groq");
     return res.status(200).json({ text: q.text });
   }
 
-  // 2) Groq failed, so try Gemini
-  const g = await gemini(system, user);
+  // 2) Groq failed, so try Gemini (retry once if overloaded)
+  let g = await gemini(system, user);
+  if (g.status === 503) {
+    await new Promise((r) => setTimeout(r, 1000));
+    g = await gemini(system, user);
+  }
   if (g.ok) {
     console.log("provider: gemini (groq status " + q.status + ")");
     return res.status(200).json({ text: g.text });
   }
 
   console.log("both failed: groq " + q.status + ", gemini " + g.status);
-  return res.status(q.status === 429 || g.status === 429 ? 429 : 503).json({ error: "all providers failed" });
-
-async function gemini(system, user) {
-  try {
-    const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-    const r = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": process.env.GEMINI_API_KEY || "",
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system || "" }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { responseMimeType: "application/json" },
-        }),
-      }
-    );
-    if (!r.ok) return { ok: false, status: r.status };
-    const data = await r.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return { ok: false, status: 502 };
-    return { ok: true, status: 200, text };
-  } catch (e) {
-    return { ok: false, status: 500 };
-  }
+  const limited = q.status === 429 || g.status === 429;
+  return res.status(limited ? 429 : 503).json({ error: "all providers failed" });
 }
 
 async function groq(system, user) {
@@ -80,6 +58,34 @@ async function groq(system, user) {
     if (!r.ok) return { ok: false, status: r.status };
     const data = await r.json();
     const text = data?.choices?.[0]?.message?.content;
+    if (!text) return { ok: false, status: 502 };
+    return { ok: true, status: 200, text };
+  } catch (e) {
+    return { ok: false, status: 500 };
+  }
+}
+
+async function gemini(system, user) {
+  try {
+    const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+    const r = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY || "",
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system || "" }] },
+          contents: [{ role: "user", parts: [{ text: user }] }],
+          generationConfig: { responseMimeType: "application/json" },
+        }),
+      }
+    );
+    if (!r.ok) return { ok: false, status: r.status };
+    const data = await r.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) return { ok: false, status: 502 };
     return { ok: true, status: 200, text };
   } catch (e) {
